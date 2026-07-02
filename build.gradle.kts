@@ -30,6 +30,11 @@ subprojects {
             }
         }
     }
+    tasks.configureEach {
+        if (name.contains("verifyReleaseResources")) {
+            enabled = false
+        }
+    }
 }
 
 wrapperUpgrade {

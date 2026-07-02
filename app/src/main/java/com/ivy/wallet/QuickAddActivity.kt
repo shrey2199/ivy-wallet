@@ -1,7 +1,8 @@
 package com.ivy.wallet
 
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.os.Bundle
-import com.ivy.ui.R
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
@@ -9,6 +10,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,9 +29,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -60,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -68,6 +73,7 @@ import androidx.lifecycle.lifecycleScope
 import com.ivy.base.legacy.SharedPrefs
 import com.ivy.base.legacy.Theme
 import com.ivy.base.model.TransactionType
+import com.ivy.base.time.TimeConverter
 import com.ivy.base.time.TimeProvider
 import com.ivy.data.db.dao.read.SettingsDao
 import com.ivy.data.model.Category
@@ -75,12 +81,20 @@ import com.ivy.data.model.CategoryId
 import com.ivy.data.repository.CategoryRepository
 import com.ivy.data.repository.TransactionRepository
 import com.ivy.data.repository.mapper.TransactionMapper
+import com.ivy.design.api.IvyUI
+import com.ivy.design.l0_system.UI
+import com.ivy.design.l0_system.style
 import com.ivy.design.system.IvyMaterial3Theme
 import com.ivy.legacy.IvyWalletCtx
+import com.ivy.legacy.appDesign
 import com.ivy.legacy.datamodel.Account
 import com.ivy.legacy.datamodel.temp.toDomain
+import com.ivy.ui.R
+import com.ivy.ui.time.TimeFormatter
 import com.ivy.wallet.domain.action.account.AccountsAct
+import com.ivy.wallet.domain.deprecated.logic.SmartTitleSuggestionsLogic
 import com.ivy.wallet.ui.theme.components.ItemIconSDefaultIcon
+import com.ivy.wallet.ui.theme.components.WrapContentRow
 import com.ivy.wallet.ui.theme.findContrastTextColor
 import com.ivy.wallet.ui.theme.toComposeColor
 import com.ivy.widget.balance.WalletBalanceWidgetReceiver
@@ -89,8 +103,19 @@ import com.ivy.widget.transaction.AddTransactionWidgetCompact
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
 import java.util.UUID
 import javax.inject.Inject
+
+enum class QuickAddStep {
+    AMOUNT,
+    CATEGORY,
+    FROM_ACCOUNT,
+    TO_ACCOUNT,
+    CONFIRM
+}
 
 @AndroidEntryPoint
 class QuickAddActivity : AppCompatActivity() {
@@ -119,6 +144,15 @@ class QuickAddActivity : AppCompatActivity() {
     @Inject
     lateinit var ivyContext: IvyWalletCtx
 
+    @Inject
+    lateinit var timeConverter: TimeConverter
+
+    @Inject
+    lateinit var timeFormatter: TimeFormatter
+
+    @Inject
+    lateinit var smartTitleSuggestionsLogic: SmartTitleSuggestionsLogic
+
     private companion object {
         const val EXTRA_ADD_TRANSACTION_TYPE = "add_transaction_type_extra"
     }
@@ -145,14 +179,17 @@ class QuickAddActivity : AppCompatActivity() {
 
             LaunchedEffect(Unit) {
                 val settings = settingsDao.findFirstOrNull()
+                val theme = settings?.theme ?: if (systemDark) Theme.DARK else Theme.LIGHT
+                ivyContext.switchTheme(theme)
+
                 baseCurrency = settings?.currency ?: "USD"
-                isDarkTheme = when (settings?.theme) {
+                isDarkTheme = when (theme) {
                     Theme.LIGHT -> false
                     Theme.DARK -> true
                     Theme.AMOLED_DARK -> true
                     else -> systemDark
                 }
-                isTrueBlack = settings?.theme == Theme.AMOLED_DARK
+                isTrueBlack = theme == Theme.AMOLED_DARK
                 accounts = accountsAct(Unit)
                 categories = categoryRepository.findAll().sortedBy { it.orderNum }
                 isLoading = false
@@ -176,34 +213,45 @@ class QuickAddActivity : AppCompatActivity() {
                         dark = isDarkTheme,
                         isTrueBlack = isTrueBlack
                     ) {
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clickable { finish() },
-                            color = Color.Black.copy(alpha = 0.4f)
+                        IvyUI(
+                            design = appDesign(ivyContext),
+                            includeSurface = false,
+                            timeConverter = timeConverter,
+                            timeProvider = timeProvider,
+                            timeFormatter = timeFormatter
                         ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.BottomCenter
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clickable { finish() },
+                                color = Color.Black.copy(alpha = 0.4f)
                             ) {
-                                QuickAddFlowContainer(
-                                    transactionType = transactionType,
-                                    accounts = accounts,
-                                    categories = categories,
-                                    baseCurrency = baseCurrency,
-                                    onDismiss = { finish() },
-                                    onSaveTransaction = { amount, category, account, toAccount, title, desc ->
-                                        saveTransaction(
-                                            type = transactionType,
-                                            amount = amount,
-                                            category = category,
-                                            account = account,
-                                            toAccount = toAccount,
-                                            title = title,
-                                            desc = desc
-                                        )
-                                    }
-                                )
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.BottomCenter
+                                ) {
+                                    QuickAddFlowContainer(
+                                        transactionType = transactionType,
+                                        accounts = accounts,
+                                        categories = categories,
+                                        baseCurrency = baseCurrency,
+                                        timeFormatter = timeFormatter,
+                                        smartTitleSuggestionsLogic = smartTitleSuggestionsLogic,
+                                        onDismiss = { finish() },
+                                        onSaveTransaction = { amount, category, account, toAccount, title, desc, dateTime ->
+                                            saveTransaction(
+                                                type = transactionType,
+                                                amount = amount,
+                                                category = category,
+                                                account = account,
+                                                toAccount = toAccount,
+                                                title = title,
+                                                desc = desc,
+                                                dateTime = dateTime
+                                            )
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -219,7 +267,8 @@ class QuickAddActivity : AppCompatActivity() {
         account: Account,
         toAccount: Account?,
         title: String,
-        desc: String
+        desc: String,
+        dateTime: Instant
     ) {
         lifecycleScope.launch {
             try {
@@ -231,7 +280,7 @@ class QuickAddActivity : AppCompatActivity() {
                     toAmount = amount.toBigDecimal(),
                     title = title.takeIf { it.isNotBlank() },
                     description = desc.takeIf { it.isNotBlank() },
-                    dateTime = timeProvider.utcNow(),
+                    dateTime = dateTime,
                     categoryId = category?.id?.value,
                     isSynced = false
                 )
@@ -266,22 +315,16 @@ class QuickAddActivity : AppCompatActivity() {
     }
 }
 
-enum class QuickAddStep {
-    AMOUNT,
-    CATEGORY,
-    FROM_ACCOUNT,
-    TO_ACCOUNT,
-    CONFIRM
-}
-
 @Composable
 fun QuickAddFlowContainer(
     transactionType: TransactionType,
     accounts: List<Account>,
     categories: List<Category>,
     baseCurrency: String,
+    timeFormatter: TimeFormatter,
+    smartTitleSuggestionsLogic: SmartTitleSuggestionsLogic,
     onDismiss: () -> Unit,
-    onSaveTransaction: (Double, Category?, Account, Account?, String, String) -> Unit
+    onSaveTransaction: (Double, Category?, Account, Account?, String, String, Instant) -> Unit
 ) {
     var step by remember {
         mutableStateOf(QuickAddStep.AMOUNT)
@@ -295,8 +338,9 @@ fun QuickAddFlowContainer(
     var selectedToAccount by remember { mutableStateOf<Account?>(null) }
     var titleText by remember { mutableStateOf("") }
     var descriptionText by remember { mutableStateOf("") }
+    var selectedDateTime by remember { mutableStateOf(Instant.now()) }
 
-    val sharedPrefs = (androidx.compose.ui.platform.LocalContext.current as QuickAddActivity).sharedPrefs
+    val sharedPrefs = (LocalContext.current as QuickAddActivity).sharedPrefs
 
     // Pre-select default account when accounts are loaded
     LaunchedEffect(accounts) {
@@ -337,10 +381,11 @@ fun QuickAddFlowContainer(
                 indication = null
             ) {}
             .padding(16.dp),
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 24.dp),
+        shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = UI.colors.pure
         ),
+        border = BorderStroke(1.dp, UI.colors.medium.copy(alpha = 0.5f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
     ) {
         Column(
@@ -360,7 +405,7 @@ fun QuickAddFlowContainer(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = MaterialTheme.colorScheme.onSurface
+                            tint = UI.colors.pureInverse
                         )
                     }
                 } else {
@@ -375,16 +420,14 @@ fun QuickAddFlowContainer(
                         QuickAddStep.TO_ACCOUNT -> "Transfer To"
                         QuickAddStep.CONFIRM -> "Confirm Details"
                     },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    style = UI.typo.h2.style(color = UI.colors.pureInverse, fontWeight = FontWeight.Bold)
                 )
 
                 IconButton(onClick = onDismiss) {
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Close",
-                        tint = MaterialTheme.colorScheme.onSurface
+                        tint = UI.colors.pureInverse
                     )
                 }
             }
@@ -460,6 +503,10 @@ fun QuickAddFlowContainer(
                             onDescriptionChange = { descriptionText = it },
                             onAccountChange = { selectedAccount = it },
                             onToAccountChange = { selectedToAccount = it },
+                            selectedDateTime = selectedDateTime,
+                            onDateTimeChange = { selectedDateTime = it },
+                            timeFormatter = timeFormatter,
+                            smartTitleSuggestionsLogic = smartTitleSuggestionsLogic,
                             onSave = {
                                 selectedAccount?.let { acc ->
                                     onSaveTransaction(
@@ -468,7 +515,8 @@ fun QuickAddFlowContainer(
                                         acc,
                                         selectedToAccount,
                                         titleText,
-                                        descriptionText
+                                        descriptionText,
+                                        selectedDateTime
                                     )
                                 }
                             }
@@ -515,13 +563,14 @@ fun AmountStep(
     ) {
         Text(
             text = "$displayAmount $baseCurrency",
-            fontSize = 36.sp,
-            fontWeight = FontWeight.Bold,
-            color = when (transactionType) {
-                TransactionType.EXPENSE -> Color(0xFFEF5350)
-                TransactionType.INCOME -> Color(0xFF66BB6A)
-                TransactionType.TRANSFER -> Color(0xFF42A5F5)
-            },
+            style = UI.typo.nH1.style(
+                color = when (transactionType) {
+                    TransactionType.EXPENSE -> Color(0xFFEF5350)
+                    TransactionType.INCOME -> Color(0xFF66BB6A)
+                    TransactionType.TRANSFER -> Color(0xFF42A5F5)
+                },
+                fontWeight = FontWeight.Bold
+            ),
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(vertical = 12.dp)
         )
@@ -549,15 +598,13 @@ fun AmountStep(
                                 .padding(6.dp)
                                 .height(56.dp)
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .background(UI.colors.medium.copy(alpha = 0.15f))
                                 .clickable { onKeyClick(key) },
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = key,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                style = UI.typo.h2.style(color = UI.colors.pureInverse, fontWeight = FontWeight.Bold)
                             )
                         }
                     }
@@ -574,17 +621,17 @@ fun AmountStep(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = UI.shapes.rFull,
             colors = ButtonDefaults.buttonColors(
                 containerColor = when (transactionType) {
                     TransactionType.EXPENSE -> Color(0xFFEF5350)
                     TransactionType.INCOME -> Color(0xFF66BB6A)
                     TransactionType.TRANSFER -> Color(0xFF42A5F5)
                 },
-                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                disabledContainerColor = UI.colors.medium.copy(alpha = 0.3f)
             )
         ) {
-            Text("Next", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text("Next", style = UI.typo.b1.style(color = Color.White, fontWeight = FontWeight.Bold))
         }
     }
 }
@@ -595,49 +642,45 @@ fun CategoryGridStep(
     onCategorySelected: (Category) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            contentPadding = PaddingValues(4.dp),
+        WrapContentRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(280.dp)
-        ) {
-            items(categories) { category ->
-                val categoryColor = category.color.value.toComposeColor()
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(horizontal = 4.dp),
+            items = categories,
+            verticalMarginBetweenRows = 10.dp,
+            horizontalMarginBetweenItems = 10.dp
+        ) { category ->
+            val categoryColor = category.color.value.toComposeColor()
+            Row(
+                modifier = Modifier
+                    .clip(UI.shapes.rFull)
+                    .background(categoryColor.copy(alpha = 0.15f))
+                    .border(1.5.dp, categoryColor, UI.shapes.rFull)
+                    .clickable { onCategorySelected(category) }
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
                     modifier = Modifier
-                        .padding(6.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { onCategorySelected(category) }
-                        .padding(8.dp)
+                        .size(24.dp)
+                        .background(categoryColor, CircleShape),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .background(categoryColor, CircleShape)
-                            .border(1.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        ItemIconSDefaultIcon(
-                            iconName = category.icon?.id,
-                            defaultIcon = R.drawable.ic_custom_category_s,
-                            tint = findContrastTextColor(categoryColor),
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Text(
-                        text = category.name.value,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1
+                    ItemIconSDefaultIcon(
+                        iconName = category.icon?.id,
+                        defaultIcon = R.drawable.ic_custom_category_s,
+                        tint = findContrastTextColor(categoryColor),
+                        modifier = Modifier.size(14.dp)
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = category.name.value,
+                    style = UI.typo.b2.style(color = UI.colors.pureInverse, fontWeight = FontWeight.SemiBold)
+                )
             }
         }
     }
@@ -665,14 +708,14 @@ fun AccountSelectorStep(
                     modifier = Modifier
                         .padding(6.dp)
                         .height(64.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(UI.shapes.rFull)
                         .background(
-                            if (isSelected) accountColor else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            if (isSelected) accountColor else UI.colors.medium.copy(alpha = 0.15f)
                         )
                         .border(
                             width = 2.dp,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                            shape = RoundedCornerShape(16.dp)
+                            color = if (isSelected) UI.colors.pureInverse else Color.Transparent,
+                            shape = UI.shapes.rFull
                         )
                         .clickable { onAccountSelected(account) }
                         .padding(12.dp),
@@ -680,9 +723,10 @@ fun AccountSelectorStep(
                 ) {
                     Text(
                         text = account.name,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isSelected) findContrastTextColor(accountColor) else MaterialTheme.colorScheme.onSurface,
+                        style = UI.typo.b1.style(
+                            color = if (isSelected) findContrastTextColor(accountColor) else UI.colors.pureInverse,
+                            fontWeight = FontWeight.Bold
+                        ),
                         textAlign = TextAlign.Center
                     )
                 }
@@ -704,12 +748,35 @@ fun ConfirmStep(
     onTitleChange: (String) -> Unit,
     descriptionText: String,
     onDescriptionChange: (String) -> Unit,
+    selectedDateTime: Instant,
+    onDateTimeChange: (Instant) -> Unit,
+    timeFormatter: TimeFormatter,
+    smartTitleSuggestionsLogic: SmartTitleSuggestionsLogic,
     onAccountChange: (Account) -> Unit,
     onToAccountChange: (Account) -> Unit,
     onSave: () -> Unit
 ) {
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var toAccountDropdownExpanded by remember { mutableStateOf(false) }
+    var titleSuggestions by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    val context = LocalContext.current
+    val localDateTime = LocalDateTime.ofInstant(selectedDateTime, ZoneId.systemDefault())
+
+    LaunchedEffect(titleText, category, account) {
+        if (titleText.isNotEmpty()) {
+            kotlinx.coroutines.delay(250) // Debounce typing to prevent heavy database queries on every keystroke
+        }
+        titleSuggestions = smartTitleSuggestionsLogic.suggest(
+            title = titleText,
+            categoryId = category?.id?.value,
+            accountId = account?.id
+        )
+    }
+
+    val formattedDateTime = with(timeFormatter) {
+        selectedDateTime.formatLocal(TimeFormatter.Style.DateAndTime(includeWeekDay = true))
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -719,17 +786,18 @@ fun ConfirmStep(
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                containerColor = UI.colors.medium.copy(alpha = 0.15f)
             ),
-            shape = RoundedCornerShape(16.dp)
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, UI.colors.medium.copy(alpha = 0.3f))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Amount:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("$amount $currency", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                    Text("Amount:", style = UI.typo.b2.style(color = UI.colors.mediumInverse))
+                    Text("$amount $currency", style = UI.typo.nB1.style(color = UI.colors.pureInverse, fontWeight = FontWeight.Bold))
                 }
 
                 if (transactionType != TransactionType.TRANSFER) {
@@ -739,8 +807,8 @@ fun ConfirmStep(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Category:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(it.name.value, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Text("Category:", style = UI.typo.b2.style(color = UI.colors.mediumInverse))
+                            Text(it.name.value, style = UI.typo.b1.style(color = UI.colors.pureInverse, fontWeight = FontWeight.Bold))
                         }
                     }
                 }
@@ -754,14 +822,17 @@ fun ConfirmStep(
                 ) {
                     Text(
                         if (transactionType == TransactionType.TRANSFER) "From Account:" else "Account:",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        style = UI.typo.b2.style(color = UI.colors.mediumInverse)
                     )
                     Box {
                         Text(
                             text = account?.name ?: "Select",
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable { accountDropdownExpanded = true }
+                            style = UI.typo.b1.style(color = UI.colors.pureInverse, fontWeight = FontWeight.Bold),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(UI.colors.medium.copy(alpha = 0.2f))
+                                .clickable { accountDropdownExpanded = true }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
                         )
 
                         DropdownMenu(
@@ -788,13 +859,16 @@ fun ConfirmStep(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("To Account:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("To Account:", style = UI.typo.b2.style(color = UI.colors.mediumInverse))
                         Box {
                             Text(
                                 text = toAccount?.name ?: "Select",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.clickable { toAccountDropdownExpanded = true }
+                                style = UI.typo.b1.style(color = UI.colors.pureInverse, fontWeight = FontWeight.Bold),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(UI.colors.medium.copy(alpha = 0.2f))
+                                    .clickable { toAccountDropdownExpanded = true }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
                             )
 
                             DropdownMenu(
@@ -814,6 +888,49 @@ fun ConfirmStep(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Date & Time Picker trigger
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Date & Time:", style = UI.typo.b2.style(color = UI.colors.mediumInverse))
+                    Text(
+                        text = formattedDateTime,
+                        style = UI.typo.b2.style(color = UI.colors.pureInverse, fontWeight = FontWeight.Bold),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(UI.colors.medium.copy(alpha = 0.2f))
+                            .clickable {
+                                // Show date picker first
+                                val datePickerDialog = DatePickerDialog(
+                                    context,
+                                    { _, year, month, dayOfMonth ->
+                                        // Show time picker next
+                                        val timePickerDialog = TimePickerDialog(
+                                            context,
+                                            { _, hourOfDay, minute ->
+                                                val newDateTime = LocalDateTime.of(year, month + 1, dayOfMonth, hourOfDay, minute)
+                                                onDateTimeChange(newDateTime.atZone(ZoneId.systemDefault()).toInstant())
+                                            },
+                                            localDateTime.hour,
+                                            localDateTime.minute,
+                                            true
+                                        )
+                                        timePickerDialog.show()
+                                    },
+                                    localDateTime.year,
+                                    localDateTime.monthValue - 1,
+                                    localDateTime.dayOfMonth
+                                )
+                                datePickerDialog.show()
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
         }
 
@@ -823,27 +940,58 @@ fun ConfirmStep(
         OutlinedTextField(
             value = titleText,
             onValueChange = onTitleChange,
-            label = { Text("Title / Note (Optional)") },
+            label = { Text("Title / Note (Optional)", style = UI.typo.b2.style(color = UI.colors.mediumInverse)) },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                focusedBorderColor = UI.colors.pureInverse,
+                unfocusedBorderColor = UI.colors.medium,
+                focusedTextColor = UI.colors.pureInverse,
+                unfocusedTextColor = UI.colors.pureInverse
             ),
             singleLine = true
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        // Suggestion list
+        if (titleSuggestions.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(titleSuggestions.toList()) { suggestion ->
+                    Box(
+                        modifier = Modifier
+                            .clip(UI.shapes.rFull)
+                            .background(UI.colors.medium.copy(alpha = 0.15f))
+                            .border(1.dp, UI.colors.medium, UI.shapes.rFull)
+                            .clickable { onTitleChange(suggestion) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = suggestion,
+                            style = UI.typo.b2.style(color = UI.colors.pureInverse).copy(fontSize = 13.sp)
+                        )
+                    }
+                }
+            }
+        } else {
+            Spacer(modifier = Modifier.height(8.dp))
+        }
 
         OutlinedTextField(
             value = descriptionText,
             onValueChange = onDescriptionChange,
-            label = { Text("Description (Optional)") },
+            label = { Text("Description (Optional)", style = UI.typo.b2.style(color = UI.colors.mediumInverse)) },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                focusedBorderColor = UI.colors.pureInverse,
+                unfocusedBorderColor = UI.colors.medium,
+                focusedTextColor = UI.colors.pureInverse,
+                unfocusedTextColor = UI.colors.pureInverse
             ),
             maxLines = 3
         )
@@ -855,7 +1003,7 @@ fun ConfirmStep(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = UI.shapes.rFull,
             colors = ButtonDefaults.buttonColors(
                 containerColor = when (transactionType) {
                     TransactionType.EXPENSE -> Color(0xFFEF5350)
@@ -864,7 +1012,7 @@ fun ConfirmStep(
                 }
             )
         ) {
-            Text("Confirm & Save", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text("Confirm & Save", style = UI.typo.b1.style(color = Color.White, fontWeight = FontWeight.Bold))
         }
     }
 }
